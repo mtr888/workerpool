@@ -46,27 +46,34 @@ func (u *User) SaveUserInfo() error {
 	}
 	defer file.Close()
 	file.WriteString(u.GetActivityInfo())
-	// time.Sleep(time.Millisecond * 1)
 	return nil
 }
 
-func GenerateUsers(count int, userCh chan User) {
-	defer close(userCh)
+func GenerateUsers(done <-chan struct{}, count int) <-chan User {
+	usersChannel := make(chan User)
+	go func(count int) {
+		defer func() {
+			close(usersChannel)
+			fmt.Println("generateUsers is done")
+		}()
+		for i := 0; i < count; i++ {
 
-	for i := 0; i < count; i++ {
-		userCh <- User{
-			Id:    i + 1,
-			Email: fmt.Sprintf("user%d@company.com", i+1),
-			Logs:  generateLogs(rand.Intn(1000)),
+			select {
+			case <-done:
+				return
+			case usersChannel <- User{
+				Id:    i + 1,
+				Email: fmt.Sprintf("user%d@company.com", i+1),
+				Logs:  generateLogs(rand.Intn(2)),
+			}:
+			}
 		}
-		fmt.Printf("generated user %d\n", i+1)
-		// time.Sleep(time.Millisecond * 1)
-	}
+	}(count)
+	return usersChannel
 }
 
 func generateLogs(count int) []logItem {
 	logs := make([]logItem, count)
-
 	for i := 0; i < count; i++ {
 		logs[i] = logItem{
 			Action:    Actions[rand.Intn(len(Actions)-1)],
@@ -76,12 +83,50 @@ func generateLogs(count int) []logItem {
 	return logs
 }
 
-func Worker(id int, userCh <-chan User, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for user := range userCh {
-		err := user.SaveUserInfo()
-		if err != nil {
-			fmt.Println(err)
-		}
+func WorkerPool(done chan struct{}, usersChannel <-chan User, workerCount int) <-chan error {
+	errorChannel := make(chan error)
+	wg := sync.WaitGroup{}
+	wg.Add(workerCount)
+
+	defer fmt.Println("workerpool is done")
+
+	for i := 0; i < workerCount; i++ {
+		i := i
+		go func() {
+			defer func() {
+				wg.Done()
+				fmt.Printf("worker #%d is done\n", i+1)
+			}()
+
+			for user := range usersChannel {
+				err := user.SaveUserInfo()
+				if err != nil {
+					errorChannel <- err
+				}
+
+			}
+
+			// for {
+			// 	select {
+			// 	case <-done:
+			// 		return
+			// 	case user := <-usersChannel:
+			// 		select {
+			// 		case <-done:
+			// 			return
+			// 		case errorChannel <- func() error {
+			// 			return user.SaveUserInfo()
+			// 		}():
+			// 		}
+			// 	}
+			// }
+		}()
 	}
+
+	go func() {
+		wg.Wait()
+		close(errorChannel)
+	}()
+
+	return errorChannel
 }
